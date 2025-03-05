@@ -8,7 +8,9 @@ from PIL import Image
 from diffusers import StableDiffusionPipeline
 from transformers import CLIPTokenizer
 
-tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-V1-5', subfolder="tokenizer", revision=None)
+tokenizer = CLIPTokenizer.from_pretrained(
+    "stable-diffusion-v1-5/stable-diffusion-V1-5", subfolder="tokenizer", revision=None
+)
 prompts = [" "]
 
 LOW_RESOURCE = False
