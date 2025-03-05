@@ -227,9 +227,33 @@ def colorEncode(labelmap, colors):
 
 
 def run(meta, config, starting_noise=None):
+    # 确保输出文件夹存在
+    output_folder = os.path.join(config.folder, meta["save_folder_name"])
+    os.makedirs(output_folder, exist_ok=True)
+    print(f"输出文件夹: {output_folder}")
+
+    # 使用半精度（float16）以减少内存使用
+    torch.cuda.empty_cache()  # 清空 CUDA 缓存
+    use_fp16 = config.memory_efficient  # 根据命令行参数决定是否使用半精度
+
+    # 设置 PyTorch 内存分配器
+    if config.memory_efficient and hasattr(torch.cuda, "memory_stats"):
+        torch.cuda.set_per_process_memory_fraction(
+            0.9
+        )  # 限制 GPU 内存使用为最大可用内存的 90%
+
     # pretrained l2i model gligen
     layout_unet, autoencoder, text_encoder, diffusion, config = load_ckpt(meta["ckpt"])
-    grounding_tokenizer_input = instantiate_from_config(config['grounding_tokenizer_input'])
+
+    # 转换为半精度
+    if use_fp16:
+        layout_unet = layout_unet.half()
+        autoencoder = autoencoder.half()
+        text_encoder = text_encoder.half()
+
+    grounding_tokenizer_input = instantiate_from_config(
+        config["grounding_tokenizer_input"]
+    )
     layout_unet.grounding_tokenizer_input = grounding_tokenizer_input
     grounding_downsampler_input = None
     if "grounding_downsampler_input" in config:
@@ -252,6 +276,11 @@ def run(meta, config, starting_noise=None):
         subfolder="unet",
         revision=config.revision,
     ).to("cuda")
+
+    # 转换为半精度
+    if use_fp16:
+        text_unet = text_unet.half()
+
     controller = AttentionStore()
     register_attention_control(text_unet, controller)
 
@@ -299,14 +328,30 @@ def run(meta, config, starting_noise=None):
         layout_unet.image_size,
     )
 
-    samples_fake = sampler.sample(S=steps, shape=shape, input=input, uc=uc, guidance_scale=config.guidance_scale,
-                                  mask=inpainting_mask, x0=z0)
+    # 如果使用半精度，确保输入数据也是半精度的
+    if use_fp16 and starting_noise is not None:
+        starting_noise = starting_noise.half()
+
+    # 如果使用半精度，确保输入字典中的张量也是半精度的
+    if use_fp16:
+        for key in input:
+            if isinstance(input[key], torch.Tensor):
+                input[key] = input[key].half()
+        if isinstance(uc, torch.Tensor):
+            uc = uc.half()
+
+    samples_fake = sampler.sample(
+        S=steps,
+        shape=shape,
+        input=input,
+        uc=uc,
+        guidance_scale=config.guidance_scale,
+        mask=inpainting_mask,
+        x0=z0,
+    )
     samples_fake = autoencoder.decode(samples_fake)
 
     # save
-    output_folder = os.path.join(args.folder, meta["save_folder_name"])
-    os.makedirs(output_folder, exist_ok=True)
-
     start = len(os.listdir(output_folder))
     image_ids = list(range(start, start + config.batch_size))
     print(image_ids)
@@ -315,7 +360,25 @@ def run(meta, config, starting_noise=None):
         sample = torch.clamp(sample, min=-1, max=1) * 0.5 + 0.5
         sample = sample.detach().cpu().numpy().transpose(1, 2, 0) * 255
         sample = Image.fromarray(sample.astype(np.uint8))
-        sample.save(os.path.join(output_folder, img_name))
+
+        # 调整图像大小
+        if hasattr(config, "output_size") and config.output_size != sample.width:
+            sample = sample.resize(
+                (config.output_size, config.output_size), Image.LANCZOS
+            )
+
+        save_path = os.path.join(output_folder, img_name)
+        sample.save(save_path)
+        print(f"图像已保存到: {save_path}")
+
+        # 如果用户选择了显示图像选项，则显示图像
+        if config.display_image:
+            try:
+                sample.show()
+            except Exception as e:
+                print(f"无法显示图像: {e}")
+
+    print(f"\n所有图像已保存到文件夹: {output_folder}\n")
 
 
 if __name__ == "__main__":
@@ -385,6 +448,22 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="the set of locations where each object appears in the prompt",
+    )
+    parser.add_argument(
+        "--memory_efficient",
+        action="store_true",
+        help="使用内存优化模式，减少 GPU 内存使用",
+    )
+    parser.add_argument(
+        "--display_image",
+        action="store_true",
+        help="在生成后显示图像",
+    )
+    parser.add_argument(
+        "--output_size",
+        type=int,
+        default=512,
+        help="输出图像的大小（宽度和高度）",
     )
     args = parser.parse_args()
 
