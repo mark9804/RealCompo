@@ -112,9 +112,21 @@ class PLMSSampler(object):
         input2["x"] = latent
         input2["timesteps"] = t
         e_t_layout, attn_layout = self.layout_unet(input2)
-        e_t_text = self.text_unet(input2["x"], input2["timesteps"], input2["context"]).sample
-        attn_text = aggregate_attention_each_step(self.controller, res=16, from_where=("up", "down"), is_cross=True,
-                                                  select=0)  # torch.Size([16, 16, 77])
+        e_t_text = self.text_unet(
+            input2["x"], input2["timesteps"], input2["context"]
+        ).sample
+        # 获取 batch_size
+        batch_size = (
+            latent.shape[0] if hasattr(latent, "shape") and len(latent.shape) > 0 else 1
+        )
+        attn_text = aggregate_attention_each_step(
+            self.controller,
+            res=16,
+            from_where=("up", "down"),
+            is_cross=True,
+            select=0,
+            batch_size=batch_size,
+        )  # torch.Size([16, 16, 77])
         del e_t_layout, e_t_text
         return attn_layout, attn_text
 

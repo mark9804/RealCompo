@@ -201,12 +201,65 @@ class SelfAttention(nn.Module):
         k = k.view(B, N, H, C).permute(0, 2, 1, 3).reshape(B * H, N, C)  # (B*H)*N*C
         v = v.view(B, N, H, C).permute(0, 2, 1, 3).reshape(B * H, N, C)  # (B*H)*N*C
 
-        sim = torch.einsum('b i c, b j c -> b i j', q, k) * self.scale  # (B*H)*N*N
-        attn = sim.softmax(dim=-1)  # (B*H)*N*N
+        # 检查可用内存
+        if (
+                torch.cuda.is_available()
+                and N > 1024
+                and torch.cuda.get_device_properties(0).total_memory
+                - torch.cuda.memory_allocated(0)
+                < 2e9
+        ):  # 如果序列长度大于1024且可用内存小于2GB
+            # 分块计算注意力以节省内存
+            chunk_size = 512  # 可以根据可用内存调整
+            out = torch.zeros_like(q)
 
-        out = torch.einsum('b i j, b j c -> b i c', attn, v)  # (B*H)*N*C
-        out = out.view(B, H, N, C).permute(0, 2, 1, 3).reshape(B, N, (H * C))  # B*N*(H*C)
+            for i in range(0, N, chunk_size):
+                end_i = min(i + chunk_size, N)
+                q_chunk = q[:, i:end_i, :]
 
+                # 计算当前块的注意力分数
+                chunk_attn = torch.zeros(
+                    B * H, end_i - i, N, device=q.device, dtype=q.dtype
+                )
+
+                for j in range(0, N, chunk_size):
+                    end_j = min(j + chunk_size, N)
+                    k_chunk = k[:, j:end_j, :]
+
+                    # 计算当前块的注意力分数
+                    sim_chunk = (
+                            torch.einsum("b i c, b j c -> b i j", q_chunk, k_chunk)
+                            * self.scale
+                    )
+                    chunk_attn[:, :, j:end_j] = sim_chunk
+
+                # 对完整的注意力分数进行softmax
+                attn_chunk = chunk_attn.softmax(dim=-1)
+
+                # 计算当前块的输出
+                out_chunk = torch.zeros(
+                    B * H, end_i - i, C, device=v.device, dtype=v.dtype
+                )
+
+                for j in range(0, N, chunk_size):
+                    end_j = min(j + chunk_size, N)
+                    v_chunk = v[:, j:end_j, :]
+
+                    # 计算当前块的输出
+                    out_chunk += torch.einsum(
+                        "b i j, b j c -> b i c", attn_chunk[:, :, j:end_j], v_chunk
+                    )
+
+                out[:, i:end_i, :] = out_chunk
+        else:
+            # 原始计算方式
+            sim = torch.einsum("b i c, b j c -> b i j", q, k) * self.scale  # (B*H)*N*N
+            attn = sim.softmax(dim=-1)  # (B*H)*N*N
+            out = torch.einsum("b i j, b j c -> b i c", attn, v)  # (B*H)*N*C
+
+        out = (
+            out.view(B, H, N, C).permute(0, 2, 1, 3).reshape(B, N, (H * C))
+        )  # B*N*(H*C)
         return self.to_out(out)
 
 
