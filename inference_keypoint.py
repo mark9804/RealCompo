@@ -1,21 +1,24 @@
-from diffusers import ControlNetModel
-from keypoint_model.model import StableDiffusionXLControlNet
-from keypoint_model.detector import Detector
-from keypoint_model.attention import AttentionStore, register_attention_control_sdxl
-import torch
 import argparse
-import os
 import ast
+import os
+
+import torch
+from diffusers import ControlNetModel
 from diffusers.utils import load_image
 
-device = "cuda:0" 
+from keypoint_model.attention import AttentionStore, register_attention_control_sdxl
+from keypoint_model.detector import Detector
+from keypoint_model.model import StableDiffusionXLControlNet
+
+device = "cuda:0"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=115, help="random seed")
 parser.add_argument("--scale_factor", type=int, default=1000000, help="")
 parser.add_argument("--scale_range", type=tuple, default=(1.0, 0.5), help="")
-parser.add_argument('--user_prompt', type=str,help='input user prompt')
-parser.add_argument("--token_location", type=str, default=None, help="the set of locations where each object appears in the prompt")
+parser.add_argument('--user_prompt', type=str, help='input user prompt')
+parser.add_argument("--token_location", type=str, default=None,
+                    help="the set of locations where each object appears in the prompt")
 args = parser.parse_args()
 
 # Compute openpose conditioning image.
@@ -39,13 +42,12 @@ token_location = ast.literal_eval(args.token_location)
 save_folder = "generation/" + prompt.replace(" ", "_")
 os.makedirs(save_folder, exist_ok=True)
 
-
 images = pipe(
-    prompt=prompt, 
-    height = 1024,
-    width = 1024,
+    prompt=prompt,
+    height=1024,
+    width=1024,
     negative_prompt=negative_prompt,
-    controller = controller,
+    controller=controller,
     num_inference_steps=50,
     num_images_per_prompt=1,
     image=openpose_image.resize((1024, 1024)),

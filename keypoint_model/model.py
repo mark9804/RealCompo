@@ -1,33 +1,33 @@
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import PIL
+import numpy as np
+import torch
 from diffusers import StableDiffusionXLControlNetPipeline
 from diffusers.models import ControlNetModel
-from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput 
-from diffusers.utils import is_compiled_module
 from diffusers.pipelines.controlnet import MultiControlNetModel
+from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
+from diffusers.utils import is_compiled_module
+
 from keypoint_model.attention import aggregate_attention_each_step
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-import torch
-import numpy as np
-import PIL 
-
-
 
 
 class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
 
     @torch.no_grad()
-    def get_noise(self, 
-                  latents, 
-                  do_classifier_free_guidance, 
-                  t, 
-                  guess_mode, 
-                  prompt_embeds, 
-                  controlnet_keep, 
-                  controlnet_conditioning_scale, 
-                  i, 
-                  add_text_embeds, 
-                  add_time_ids, 
-                  image, 
-                  cross_attention_kwargs, 
+    def get_noise(self,
+                  latents,
+                  do_classifier_free_guidance,
+                  t,
+                  guess_mode,
+                  prompt_embeds,
+                  controlnet_keep,
+                  controlnet_conditioning_scale,
+                  i,
+                  add_text_embeds,
+                  add_time_ids,
+                  image,
+                  cross_attention_kwargs,
                   guidance_scale):
         # expand the latents if we are doing classifier free guidance
         latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
@@ -89,22 +89,22 @@ class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
             noise_pred_sdxl_uncond, noise_pred_sdxl_text = noise_pred_sdxl.chunk(2)
             noise_pred_sdxl = noise_pred_sdxl_uncond + guidance_scale * (noise_pred_sdxl_text - noise_pred_sdxl_uncond)
         return noise_pred_sdxl, noise_pred_ctrl
-    
+
     # @torch.no_grad()
-    def get_attn(self, 
-                  latents, 
-                  do_classifier_free_guidance, 
-                  t, 
-                  guess_mode, 
-                  prompt_embeds, 
-                  controlnet_keep, 
-                  controlnet_conditioning_scale, 
-                  i, 
-                  add_text_embeds, 
-                  add_time_ids, 
-                  image, 
-                  cross_attention_kwargs, 
-                  controller):
+    def get_attn(self,
+                 latents,
+                 do_classifier_free_guidance,
+                 t,
+                 guess_mode,
+                 prompt_embeds,
+                 controlnet_keep,
+                 controlnet_conditioning_scale,
+                 i,
+                 add_text_embeds,
+                 add_time_ids,
+                 image,
+                 cross_attention_kwargs,
+                 controller):
         # expand the latents if we are doing classifier free guidance
         latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -151,7 +151,8 @@ class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
             added_cond_kwargs=added_cond_kwargs,
             return_dict=False,
         )[0]
-        attn_ctrl = aggregate_attention_each_step(controller, res = 32, from_where = ("up",), is_cross = True, select = 0) # torch.Size([32, 32, 77])
+        attn_ctrl = aggregate_attention_each_step(controller, res=32, from_where=("up",), is_cross=True,
+                                                  select=0)  # torch.Size([32, 32, 77])
         noise_pred_sdxl = self.unet(
             latent_model_input,
             t,
@@ -160,31 +161,32 @@ class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
             added_cond_kwargs=added_cond_kwargs,
             return_dict=False,
         )[0]
-        attn_sdxl = aggregate_attention_each_step(controller, res = 32, from_where = ("up",), is_cross = True, select = 0) # torch.Size([32, 32, 77])
+        attn_sdxl = aggregate_attention_each_step(controller, res=32, from_where=("up",), is_cross=True,
+                                                  select=0)  # torch.Size([32, 32, 77])
         return attn_sdxl, attn_ctrl
 
     def compose_noise(self, noise_sdxl, noise_ctrl, influence_sdxl, influence_ctrl):
-        concat_map = torch.cat([influence_sdxl, influence_ctrl], dim=1) 
-        softmax_map = torch.nn.functional.softmax(input=concat_map, dim=1) 
-        confidence_map_sdxl = softmax_map[:,0,:,:].unsqueeze(1)  
-        confidence_map_ctrl = softmax_map[:,1,:,:].unsqueeze(1)
+        concat_map = torch.cat([influence_sdxl, influence_ctrl], dim=1)
+        softmax_map = torch.nn.functional.softmax(input=concat_map, dim=1)
+        confidence_map_sdxl = softmax_map[:, 0, :, :].unsqueeze(1)
+        confidence_map_ctrl = softmax_map[:, 1, :, :].unsqueeze(1)
         noise = confidence_map_sdxl * noise_sdxl + confidence_map_ctrl * noise_ctrl
         noise = noise.to(noise_ctrl.dtype)
         return noise
 
     def get_loss(self, attention_sdxl, attention_ctrl, bboxs, token_location, device):
-        loss = torch.tensor(0.0).to(device) 
+        loss = torch.tensor(0.0).to(device)
         sum_box = torch.tensor(0.0)
         sum_all = torch.tensor(0.0)
         for i, (box, location) in enumerate(zip(bboxs, token_location)):
             x1, y1, x2, y2 = box
-            x1, y1, x2, y2 = int(64*x1), int(64*y1), int(64*x2), int(64*y2)
+            x1, y1, x2, y2 = int(64 * x1), int(64 * y1), int(64 * x2), int(64 * y2)
             sum_box = torch.sum(attention_sdxl[y1:y2, x1:x2, location])
             sum_all = torch.sum(attention_sdxl[:, :, location])
             loss += 1 - sum_box / sum_all
         for i, (box, location) in enumerate(zip(bboxs, token_location)):
             x1, y1, x2, y2 = box
-            x1, y1, x2, y2 = int(64*x1), int(64*y1), int(64*x2), int(64*y2)
+            x1, y1, x2, y2 = int(64 * x1), int(64 * y1), int(64 * x2), int(64 * y2)
             sum_box = torch.sum(attention_ctrl[y1:y2, x1:x2, location])
             sum_all = torch.sum(attention_ctrl[:, :, location])
             loss += 1 - sum_box / sum_all
@@ -192,47 +194,47 @@ class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
 
     @torch.no_grad()
     def __call__(
-        self,
-        controller,
-        prompt: Union[str, List[str]] = None,
-        prompt_2: Optional[Union[str, List[str]]] = None,
-        image: Union[
-            torch.FloatTensor,
-            PIL.Image.Image,
-            np.ndarray,
-            List[torch.FloatTensor],
-            List[PIL.Image.Image],
-            List[np.ndarray],
-        ] = None,
-        height: Optional[int] = None,
-        width: Optional[int] = None,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 5.0,
-        negative_prompt: Optional[Union[str, List[str]]] = None,
-        negative_prompt_2: Optional[Union[str, List[str]]] = None,
-        num_images_per_prompt: Optional[int] = 1,
-        eta: float = 0.0,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        latents: Optional[torch.FloatTensor] = None,
-        prompt_embeds: Optional[torch.FloatTensor] = None,
-        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: Optional[str] = "pil",
-        return_dict: bool = True,
-        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-        callback_steps: int = 1,
-        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-        controlnet_conditioning_scale: Union[float, List[float]] = 1.0,
-        guess_mode: bool = False,
-        control_guidance_start: Union[float, List[float]] = 0.0,
-        control_guidance_end: Union[float, List[float]] = 1.0,
-        original_size: Tuple[int, int] = None,
-        crops_coords_top_left: Tuple[int, int] = (0, 0),
-        target_size: Tuple[int, int] = None,
-        device: Optional[Union[str, torch.device]] = None,
-        bboxs: Optional[List[List[int]]] = None,
-        scale_factor: int = 1000000,
-        scale_range: Tuple[float, float] = (1.0, 0.5),
-        token_location: Optional[List[int]] = None,
+            self,
+            controller,
+            prompt: Union[str, List[str]] = None,
+            prompt_2: Optional[Union[str, List[str]]] = None,
+            image: Union[
+                torch.FloatTensor,
+                PIL.Image.Image,
+                np.ndarray,
+                List[torch.FloatTensor],
+                List[PIL.Image.Image],
+                List[np.ndarray],
+            ] = None,
+            height: Optional[int] = None,
+            width: Optional[int] = None,
+            num_inference_steps: int = 50,
+            guidance_scale: float = 5.0,
+            negative_prompt: Optional[Union[str, List[str]]] = None,
+            negative_prompt_2: Optional[Union[str, List[str]]] = None,
+            num_images_per_prompt: Optional[int] = 1,
+            eta: float = 0.0,
+            generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+            latents: Optional[torch.FloatTensor] = None,
+            prompt_embeds: Optional[torch.FloatTensor] = None,
+            negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+            output_type: Optional[str] = "pil",
+            return_dict: bool = True,
+            callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+            callback_steps: int = 1,
+            cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+            controlnet_conditioning_scale: Union[float, List[float]] = 1.0,
+            guess_mode: bool = False,
+            control_guidance_start: Union[float, List[float]] = 0.0,
+            control_guidance_end: Union[float, List[float]] = 1.0,
+            original_size: Tuple[int, int] = None,
+            crops_coords_top_left: Tuple[int, int] = (0, 0),
+            target_size: Tuple[int, int] = None,
+            device: Optional[Union[str, torch.device]] = None,
+            bboxs: Optional[List[List[int]]] = None,
+            scale_factor: int = 1000000,
+            scale_range: Tuple[float, float] = (1.0, 0.5),
+            token_location: Optional[List[int]] = None,
     ):
         controlnet = self.controlnet._orig_mod if is_compiled_module(self.controlnet) else self.controlnet
 
@@ -415,8 +417,10 @@ class StableDiffusionXLControlNet(StableDiffusionXLControlNetPipeline):
                     )
                     loss = self.get_loss(attn_sdxl, attn_ctrl, bboxs, token_location, device)
                     # print(torch.autograd.grad(loss.requires_grad_(True), [attn_ctrl.requires_grad_(True)], retain_graph=True)[0])
-                    grad_cond_influence_sdxl = torch.autograd.grad(loss.requires_grad_(True), [influence_sdxl], retain_graph=True)[0]
-                    grad_cond_influence_ctrl = torch.autograd.grad(loss.requires_grad_(True), [influence_ctrl], retain_graph=True)[0]
+                    grad_cond_influence_sdxl = \
+                        torch.autograd.grad(loss.requires_grad_(True), [influence_sdxl], retain_graph=True)[0]
+                    grad_cond_influence_ctrl = \
+                        torch.autograd.grad(loss.requires_grad_(True), [influence_ctrl], retain_graph=True)[0]
                     step_size = scale_factor * np.sqrt(scale_range[i])
                     influence_sdxl = influence_sdxl - step_size * grad_cond_influence_sdxl
                     influence_ctrl = influence_ctrl - step_size * grad_cond_influence_ctrl
